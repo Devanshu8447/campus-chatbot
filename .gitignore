@@ -1,0 +1,21 @@
+# Ignore Python environment files
+.env
+.env.*
+
+# Ignore Python cache and build files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+build/
+dist/
+*.egg-info/
+
+# Ignore virtual environment folders
+venv/
+myenv/
+.envrc
+
+# Ignore other sensitive or system files
+.DS_Store
+Thumbs.db
