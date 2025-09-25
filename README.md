@@ -18,8 +18,6 @@ Campus Sahayak is an interactive AI-powered chatbot application designed to assi
 2. Create a Python virtual environment (recommended):
 python -m venv myenv
 source myenv/bin/activate # On Windows use myenv\Scripts\activate
-
-text
 3. Install the required dependencies:
 pip install -r requirements.txt
 
@@ -35,7 +33,6 @@ pip install -r requirements.txt
 - Start a new chat thread.
 - Upload new PDF notices (will be added to the searchable vector store).
 - Switch between chat threads.
-
 4. Type your questions about campus information in the chat input.
 
 ### Backend Overview
