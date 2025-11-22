@@ -23,10 +23,10 @@ Thumbs.db
 # Streamlit secrets (never commit)
 .streamlit/secrets.toml
 
-# Chatbot data files (large, regeneratable)
+
+echo "
 chatbot.db
 chroma_persist/
 *.db
-
-# Uploaded PDFs (optional - keep if you want them in repo)
-# brochures/*.pdf
+brochures/*.pdf
+" >> .gitignore
