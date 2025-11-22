@@ -1,15 +1,28 @@
 import streamlit as st
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 import uuid
 import os
-from backend import add_new_notices
+from dotenv import load_dotenv
+
+# Import from backend
+from backend import (
+    add_new_notices,
+    chatbot,
+    retrieve_all_threads,
+    load_brochures,
+    initialize_vector_store,
+)
+
+load_dotenv()
 
 
 def generate_thread_id():
+    """Generate a unique thread ID."""
     return str(uuid.uuid4())
 
 
 def reset_chat():
+    """Reset the chat and create a new thread."""
     thread_id = generate_thread_id()
     st.session_state["thread_id"] = thread_id
     add_thread(thread_id)
@@ -17,16 +30,26 @@ def reset_chat():
 
 
 def add_thread(thread_id):
+    """Add a thread to the list if it doesn't exist."""
     if thread_id not in st.session_state["chat_threads"]:
         st.session_state["chat_threads"].append(thread_id)
 
 
-def load_conversation(thread_id):
-    from backend import chatbot  # deferred import to avoid circular import
+def load_conversation(thread_id: str) -> list:
+    """Load message history from a thread."""
+    try:
+        state = chatbot.get_state({"configurable": {"thread_id": thread_id}})
+        if state and state.values:
+            messages = state.values.get("messages", [])
+            return [m for m in messages if isinstance(m, BaseMessage)]
+    except Exception as e:
+        st.warning(f"Could not load conversation: {e}")
+    return []
 
-    state = chatbot.get_state(config={"configurable": {"thread_id": thread_id}})
-    return state.values.get("messages", [])
 
+# ============================================================================
+# SESSION STATE INITIALIZATION
+# ============================================================================
 
 if "message_history" not in st.session_state:
     st.session_state["message_history"] = []
@@ -35,100 +58,132 @@ if "thread_id" not in st.session_state:
     st.session_state["thread_id"] = generate_thread_id()
 
 if "chat_threads" not in st.session_state:
-    from backend import retrieve_all_threads
-
     st.session_state["chat_threads"] = retrieve_all_threads()
+
+if "vector_store_initialized" not in st.session_state:
+    st.session_state["vector_store_initialized"] = False
 
 add_thread(st.session_state["thread_id"])
 
+
+# ============================================================================
+# SIDEBAR
+# ============================================================================
+
 st.sidebar.title("Campus Chatbot")
 
-if st.sidebar.button("New Chat"):
+if st.sidebar.button("🆕 New Chat"):
     reset_chat()
+    st.rerun()
 
-st.sidebar.header("Upload New Notices")
+# Initialize vector store (only once)
+if not st.session_state["vector_store_initialized"]:
+    with st.spinner("🔄 Loading campus documents..."):
+        docs = load_brochures()
+        if docs:
+            initialize_vector_store(docs)
+    st.session_state["vector_store_initialized"] = True
+
+# Upload new notices
+st.sidebar.header("📄 Upload New Notices")
 uploaded_files = st.sidebar.file_uploader(
     "Select PDF notice(s) to upload",
     type=["pdf"],
     accept_multiple_files=True,
 )
+
 if uploaded_files:
     saved_paths = []
+    os.makedirs("brochures", exist_ok=True)
+
     for uploaded_file in uploaded_files:
         save_path = os.path.join("brochures", uploaded_file.name)
-        # Save uploaded file to 'brochures' folder
         with open(save_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         saved_paths.append(save_path)
 
-    # Add new PDFs to vectorstore dynamically
+    # Add to vector store
     added_count = add_new_notices(saved_paths)
-    st.sidebar.success(f"Added {added_count} new notice(s) to vector database.")
+    st.sidebar.success(f"✅ Added {added_count} new notice(s) to the database!")
 
-st.sidebar.header("Chat Threads")
+# Thread selector
+st.sidebar.header("💬 Chat History")
 for thread_id in st.session_state["chat_threads"][::-1]:
-    if st.sidebar.button(str(thread_id)):
+    thread_display = str(thread_id)[:8]
+    if st.sidebar.button(
+        thread_display, key=f"thread_{thread_id}", use_container_width=True
+    ):
         st.session_state["thread_id"] = thread_id
         messages = load_conversation(thread_id)
-        temp_messages = []
-        for msg in messages:
-            role = "user" if isinstance(msg, HumanMessage) else "assistant"
-            temp_messages.append({"role": role, "content": msg.content})
-        st.session_state["message_history"] = temp_messages
+        st.session_state["message_history"] = messages
+        st.rerun()
 
 
-st.header("Ask About Courses, Admissions, and More")
+# ============================================================================
+# MAIN CHAT INTERFACE
+# ============================================================================
 
+st.header("🎓 Campus Information Chatbot")
+st.write("Ask questions about courses, admissions, campus facilities, and more!")
+
+# Display message history
 for message in st.session_state["message_history"]:
-    with st.chat_message(message["role"]):
-        st.text(message["content"])
+    if isinstance(message, HumanMessage):
+        with st.chat_message("user"):
+            st.write(message.content)
+    elif isinstance(message, AIMessage):
+        with st.chat_message("assistant"):
+            st.write(message.content)
 
-user_input = st.chat_input("Type your question about campus info here")
+# Chat input
+user_input = st.chat_input("Type your question here...")
 
 if user_input:
-    st.session_state["message_history"].append({"role": "user", "content": user_input})
+    # Add user message to history
+    user_message = HumanMessage(content=user_input)
+    st.session_state["message_history"].append(user_message)
+
+    # Display user message
     with st.chat_message("user"):
-        st.text(user_input)
+        st.write(user_input)
 
-    from backend import chatbot  # deferred import
-
-    CONFIG = {
-        "configurable": {"thread_id": st.session_state["thread_id"]},
-        "metadata": {"thread_id": st.session_state["thread_id"]},
-        "run_name": "chat_turn",
-    }
-
+    # Stream response from chatbot
     with st.chat_message("assistant"):
-        status_holder = {"box": None}
+        config = {"configurable": {"thread_id": st.session_state["thread_id"]}}
 
-        def ai_only_stream():
-            for message_chunk, _ in chatbot.stream(
-                {"messages": [HumanMessage(content=user_input)]},
-                config=CONFIG,
-                stream_mode="messages",
+        ai_content = ""
+        status_placeholder = st.empty()
+        response_placeholder = st.empty()
+
+        try:
+            # Stream from chatbot
+            for chunk in chatbot.stream(
+                {"messages": st.session_state["message_history"]},
+                config=config,
+                stream_mode="values",
             ):
-                if message_chunk.type == "tool":
-                    tool_name = getattr(message_chunk, "name", "tool")
-                    if status_holder["box"] is None:
-                        status_holder["box"] = st.status(
-                            f"🔧 Using `{tool_name}` …", expanded=True
-                        )
-                    else:
-                        status_holder["box"].update(
-                            label=f"🔧 Using `{tool_name}` …",
-                            state="running",
-                            expanded=True,
-                        )
-                if message_chunk.type == "ai":
-                    yield message_chunk.content
+                latest_msg = chunk["messages"][-1]
 
-        ai_message = st.write_stream(ai_only_stream())
+                # Display AI message content
+                if isinstance(latest_msg, AIMessage):
+                    ai_content = latest_msg.content
+                    response_placeholder.write(ai_content)
 
-        if status_holder["box"] is not None:
-            status_holder["box"].update(
-                label="✅ Tool finished", state="complete", expanded=False
-            )
+                # Show tool status if tools are being used
+                elif hasattr(latest_msg, "tool_calls") and latest_msg.tool_calls:
+                    tool_names = ", ".join(
+                        [tc.get("name", "tool") for tc in latest_msg.tool_calls]
+                    )
+                    status_placeholder.info(f"🔧 Using: {tool_names}")
 
-    st.session_state["message_history"].append(
-        {"role": "assistant", "content": ai_message}
-    )
+            # Clear status after completion
+            status_placeholder.empty()
+
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")
+            ai_content = ""
+
+    # Save assistant response to history
+    if ai_content:
+        assistant_message = AIMessage(content=ai_content)
+        st.session_state["message_history"].append(assistant_message)

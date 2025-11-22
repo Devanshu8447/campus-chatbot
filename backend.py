@@ -1,8 +1,11 @@
+import os
+import sqlite3
+import glob
+from dotenv import load_dotenv
+
 from langchain_community.document_loaders import PyPDFLoader
-#from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 from langchain_core.messages import AIMessage, BaseMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -11,96 +14,185 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.graph.message import add_messages
 from langchain_chroma import Chroma
 from typing import TypedDict, Annotated
-import os
-import sqlite3
-import glob
-from dotenv import load_dotenv
-import streamlit as st
 
 load_dotenv()
 
 
-def load_brochures(folder_path: str = "./brochures"):
+def load_brochures(folder_path: str = "./brochures") -> list:
+    """Load PDF documents from the given folder path."""
+    if not os.path.exists(folder_path):
+        return []
+    
     docs = []
     for pdf_path in glob.glob(os.path.join(folder_path, "*.pdf")):
-        loader = PyPDFLoader(pdf_path)
-        docs.extend(loader.load())
+        try:
+            loader = PyPDFLoader(pdf_path)
+            docs.extend(loader.load())
+        except Exception as e:
+            print(f"Error loading {pdf_path}: {e}")
     return docs
 
 
+# Get API key from environment or Streamlit secrets
+google_api_key = os.getenv("GOOGLE_API_KEY")
 
-embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/embedding-001",
-    google_api_key=os.getenv("GOOGLE_API_KEY")
-)
+# Initialize embeddings (lazy loading - will be used when needed)
+embeddings = None
 
+def get_embeddings():
+    """Lazy load embeddings to avoid timeout on startup."""
+    global embeddings
+    if embeddings is None:
+        embeddings = GoogleGenerativeAIEmbeddings(
+            model="models/embedding-001",
+            google_api_key=google_api_key
+        )
+    return embeddings
+
+
+# Initialize vector store (empty, will add docs on frontend init)
 PERSIST_DIRECTORY = "./chroma_persist"
-docs = load_brochures()
 
-# CORRECT Chroma initialization
-vector_store = Chroma(
-    collection_name="campus_docs",
-    embedding_function=embeddings,
-    persist_directory=PERSIST_DIRECTORY,
-)
-vector_store.add_documents(documents=docs)
+def get_vector_store():
+    """Get or create the vector store."""
+    return Chroma(
+        collection_name="campus_docs",
+        embedding_function=get_embeddings(),
+        persist_directory=PERSIST_DIRECTORY,
+    )
 
+
+# Initialize LLM
 llm = ChatGoogleGenerativeAI(
-    api_key=os.getenv("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY"),
+    api_key=google_api_key,
     model="gemini-2.5-flash",
+    temperature=0.7,
 )
 
 
-# Modern tool-based approach instead of RetrievalQA
+# Define campus QA tool
 @tool
 def campus_qa(query: str) -> str:
-    """Query campus documents using RAG."""
-    docs = vector_store.similarity_search(query, k=3)
-    context = "\n\n".join([doc.page_content for doc in docs])
-    response = llm.invoke(f"Context: {context}\n\nQuestion: {query}")
-    return response.content
+    """
+    Query the campus brochure documents and return relevant information.
+    Use this tool to answer questions about courses, admissions, campus facilities, etc.
+    """
+    try:
+        vector_store = get_vector_store()
+        docs = vector_store.similarity_search(query, k=3)
+        
+        if not docs:
+            return "I couldn't find relevant information in the campus documents."
+        
+        context = "\n\n".join([doc.page_content for doc in docs])
+        
+        # Use LLM to generate response based on retrieved context
+        response = llm.invoke(
+            f"Based on the following campus information, answer the question.\n\n"
+            f"Context:\n{context}\n\n"
+            f"Question: {query}\n\n"
+            f"Answer:"
+        )
+        return response.content
+    except Exception as e:
+        return f"Error retrieving information: {str(e)}"
 
 
 tools = [campus_qa]
 tool_node = ToolNode(tools)
 
 
+# Define chat state
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
 
+# Define chat node
 def chat_node(state: ChatState):
-    """LLM processes messages and may invoke tools."""
+    """LLM processes messages and decides whether to use tools."""
     messages = state["messages"]
     response = llm.invoke(messages)
     return {"messages": [response]}
 
 
-conn = sqlite3.connect("chatbot.db", check_same_thread=False)
-checkpointer = SqliteSaver(conn=conn)
-
-graph = StateGraph(ChatState)
-graph.add_node("chat_node", chat_node)
-graph.add_node("tools", tool_node)
-graph.add_edge(START, "chat_node")
-graph.add_conditional_edges("chat_node", tools_condition)
-graph.add_edge("tools", "chat_node")
-
-chatbot = graph.compile(checkpointer=checkpointer)
+# Initialize SQLite checkpointer for persistence
+def get_checkpointer():
+    """Get or create SQLite checkpointer for conversation persistence."""
+    conn = sqlite3.connect("chatbot.db", check_same_thread=False)
+    return SqliteSaver(conn=conn)
 
 
-def retrieve_all_threads():
-    all_threads = set()
-    for checkpoint in checkpointer.list(None):
-        all_threads.add(checkpoint.config["configurable"]["thread_id"])
-    return list(all_threads)
+# Build the graph
+def create_chatbot_graph():
+    """Create and compile the chatbot graph."""
+    graph = StateGraph(ChatState)
+    
+    # Add nodes
+    graph.add_node("chat_node", chat_node)
+    graph.add_node("tools", tool_node)
+    
+    # Add edges
+    graph.add_edge(START, "chat_node")
+    graph.add_conditional_edges("chat_node", tools_condition)
+    graph.add_edge("tools", "chat_node")
+    
+    # Compile with checkpointer
+    return graph.compile(checkpointer=get_checkpointer())
 
 
-def add_new_notices(pdf_paths):
-    new_docs = []
-    for pdf_path in pdf_paths:
-        loader = PyPDFLoader(pdf_path)
-        new_docs.extend(loader.load())
-    if new_docs:
-        vector_store.add_documents(documents=new_docs)
-    return len(new_docs)
+# Create the chatbot
+chatbot = create_chatbot_graph()
+
+
+# Utility functions for frontend
+def retrieve_all_threads() -> list:
+    """Retrieve all unique conversation thread IDs from the database."""
+    try:
+        checkpointer = get_checkpointer()
+        all_threads = set()
+        
+        # List returns iterator of checkpoints
+        for checkpoint in checkpointer.list(None):
+            if checkpoint and checkpoint.config:
+                thread_id = checkpoint.config.get("configurable", {}).get("thread_id")
+                if thread_id:
+                    all_threads.add(thread_id)
+        
+        return sorted(list(all_threads), reverse=True)
+    except Exception as e:
+        print(f"Error retrieving threads: {e}")
+        return []
+
+
+def add_new_notices(pdf_paths: list) -> int:
+    """Add new notice PDFs to the vector store at runtime."""
+    try:
+        new_docs = []
+        for pdf_path in pdf_paths:
+            try:
+                loader = PyPDFLoader(pdf_path)
+                new_docs.extend(loader.load())
+            except Exception as e:
+                print(f"Error loading {pdf_path}: {e}")
+        
+        if new_docs:
+            vector_store = get_vector_store()
+            vector_store.add_documents(documents=new_docs)
+        
+        return len(new_docs)
+    except Exception as e:
+        print(f"Error adding notices: {e}")
+        return 0
+
+
+def initialize_vector_store(docs: list) -> int:
+    """Initialize vector store with documents."""
+    try:
+        if docs:
+            vector_store = get_vector_store()
+            vector_store.add_documents(documents=docs)
+            return len(docs)
+        return 0
+    except Exception as e:
+        print(f"Error initializing vector store: {e}")
+        return 0
