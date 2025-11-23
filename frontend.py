@@ -96,15 +96,30 @@ if uploaded_files:
     saved_paths = []
     os.makedirs("brochures", exist_ok=True)
 
-    for uploaded_file in uploaded_files:
+    progress_bar = st.sidebar.progress(0)
+
+    for idx, uploaded_file in enumerate(uploaded_files):
         save_path = os.path.join("brochures", uploaded_file.name)
         with open(save_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         saved_paths.append(save_path)
+        progress_bar.progress((idx + 1) / len(uploaded_files))
 
     # Add to vector store
-    added_count = add_new_notices(saved_paths)
-    st.sidebar.success(f"✅ Added {added_count} new notice(s) to the database!")
+    if saved_paths:
+        with st.sidebar.spinner("Processing PDFs..."):
+            try:
+                added_count = add_new_notices(saved_paths)
+                if added_count > 0:
+                    st.sidebar.success(
+                        f"✅ Added {added_count} new page(s) to the database!"
+                    )
+                else:
+                    st.sidebar.warning(
+                        "⚠️ No new documents were added. Check file format."
+                    )
+            except Exception as e:
+                st.sidebar.error(f"❌ Error adding notices: {str(e)}")
 
 # Thread selector
 st.sidebar.header("💬 Chat History")

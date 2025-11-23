@@ -22,7 +22,7 @@ def load_brochures(folder_path: str = "./brochures") -> list:
     """Load PDF documents from the given folder path."""
     if not os.path.exists(folder_path):
         return []
-    
+
     docs = []
     for pdf_path in glob.glob(os.path.join(folder_path, "*.pdf")):
         try:
@@ -39,19 +39,20 @@ google_api_key = os.getenv("GOOGLE_API_KEY")
 # Initialize embeddings (lazy loading - will be used when needed)
 embeddings = None
 
+
 def get_embeddings():
     """Lazy load embeddings to avoid timeout on startup."""
     global embeddings
     if embeddings is None:
         embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001",
-            google_api_key=google_api_key
+            model="models/embedding-001", google_api_key=google_api_key
         )
     return embeddings
 
 
 # Initialize vector store (empty, will add docs on frontend init)
 PERSIST_DIRECTORY = "./chroma_persist"
+
 
 def get_vector_store():
     """Get or create the vector store."""
@@ -80,12 +81,12 @@ def campus_qa(query: str) -> str:
     try:
         vector_store = get_vector_store()
         docs = vector_store.similarity_search(query, k=3)
-        
+
         if not docs:
             return "I couldn't find relevant information in the campus documents."
-        
+
         context = "\n\n".join([doc.page_content for doc in docs])
-        
+
         # Use LLM to generate response based on retrieved context
         response = llm.invoke(
             f"Based on the following campus information, answer the question.\n\n"
@@ -126,16 +127,16 @@ def get_checkpointer():
 def create_chatbot_graph():
     """Create and compile the chatbot graph."""
     graph = StateGraph(ChatState)
-    
+
     # Add nodes
     graph.add_node("chat_node", chat_node)
     graph.add_node("tools", tool_node)
-    
+
     # Add edges
     graph.add_edge(START, "chat_node")
     graph.add_conditional_edges("chat_node", tools_condition)
     graph.add_edge("tools", "chat_node")
-    
+
     # Compile with checkpointer
     return graph.compile(checkpointer=get_checkpointer())
 
@@ -150,14 +151,14 @@ def retrieve_all_threads() -> list:
     try:
         checkpointer = get_checkpointer()
         all_threads = set()
-        
+
         # List returns iterator of checkpoints
         for checkpoint in checkpointer.list(None):
             if checkpoint and checkpoint.config:
                 thread_id = checkpoint.config.get("configurable", {}).get("thread_id")
                 if thread_id:
                     all_threads.add(thread_id)
-        
+
         return sorted(list(all_threads), reverse=True)
     except Exception as e:
         print(f"Error retrieving threads: {e}")
@@ -168,20 +169,33 @@ def add_new_notices(pdf_paths: list) -> int:
     """Add new notice PDFs to the vector store at runtime."""
     try:
         new_docs = []
+
         for pdf_path in pdf_paths:
+            if not os.path.exists(pdf_path):
+                print(f"File not found: {pdf_path}")
+                continue
+
             try:
                 loader = PyPDFLoader(pdf_path)
-                new_docs.extend(loader.load())
+                docs = loader.load()
+                print(f"Loaded {len(docs)} pages from {pdf_path}")
+                new_docs.extend(docs)
             except Exception as e:
                 print(f"Error loading {pdf_path}: {e}")
-        
+
+        # Add documents to vector store
         if new_docs:
             vector_store = get_vector_store()
+            print(f"Adding {len(new_docs)} documents to vector store...")
             vector_store.add_documents(documents=new_docs)
-        
-        return len(new_docs)
+            print(f"Successfully added {len(new_docs)} documents")
+            return len(new_docs)
+        else:
+            print("No documents loaded from PDFs")
+            return 0
+
     except Exception as e:
-        print(f"Error adding notices: {e}")
+        print(f"Error in add_new_notices: {e}")
         return 0
 
 
