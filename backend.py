@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 from langchain_core.tools import tool
 from langchain_core.messages import AIMessage, BaseMessage
@@ -21,22 +22,22 @@ load_dotenv()
 def load_brochures(folder_path: str = "./brochures") -> list:
     """Load PDF documents from the given folder path."""
     docs = []
-    
+
     # Check if folder exists
     if not os.path.exists(folder_path):
         print(f"Creating {folder_path} folder...")
         os.makedirs(folder_path, exist_ok=True)
         return docs
-    
+
     # Get all PDF files
     pdf_files = glob.glob(os.path.join(folder_path, "*.pdf"))
-    
+
     if not pdf_files:
         print(f"No PDF files found in {folder_path}")
         return docs
-    
+
     print(f"Found {len(pdf_files)} PDF file(s) to load")
-    
+
     for pdf_path in pdf_files:
         try:
             print(f"Loading: {pdf_path}")
@@ -46,7 +47,7 @@ def load_brochures(folder_path: str = "./brochures") -> list:
             docs.extend(loaded_docs)
         except Exception as e:
             print(f"  ✗ Error loading {pdf_path}: {e}")
-    
+
     print(f"Total documents loaded: {len(docs)}")
     return docs
 
@@ -62,9 +63,8 @@ def get_embeddings():
     """Lazy load embeddings to avoid timeout on startup."""
     global embeddings
     if embeddings is None:
-        embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001", google_api_key=google_api_key
-        )
+        # Use free local HuggingFace embeddings instead
+        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     return embeddings
 
 
