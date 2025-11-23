@@ -107,7 +107,7 @@ if uploaded_files:
 
     # Add to vector store
     if saved_paths:
-        with st.sidebar.spinner("Processing PDFs..."):
+        with st.spinner("Processing PDFs..."):
             try:
                 added_count = add_new_notices(saved_paths)
                 if added_count > 0:
