@@ -4,12 +4,13 @@ import glob
 from dotenv import load_dotenv
 
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
 from langchain_core.tools import tool
 from langchain_core.messages import AIMessage, BaseMessage
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langchain_core.prompts import PromptTemplate
+from langgraph_checkpoint_sqlite import SqliteSaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.graph.message import add_messages
@@ -52,23 +53,22 @@ def load_brochures(folder_path: str = "./brochures") -> list:
     return docs
 
 
-# Get API key from environment or Streamlit secrets
+# Get API key from environment
 google_api_key = os.getenv("GOOGLE_API_KEY")
 
-# Initialize embeddings (lazy loading - will be used when needed)
+# Initialize embeddings (lazy loading)
 embeddings = None
 
 
 def get_embeddings():
-    """Lazy load embeddings to avoid timeout on startup."""
+    """Lazy load HuggingFace embeddings to avoid timeout on startup."""
     global embeddings
     if embeddings is None:
-        # Use free local HuggingFace embeddings instead
         embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     return embeddings
 
 
-# Initialize vector store (empty, will add docs on frontend init)
+# Initialize vector store
 PERSIST_DIRECTORY = "./chroma_persist"
 
 
@@ -88,30 +88,56 @@ llm = ChatGoogleGenerativeAI(
     temperature=0.7,
 )
 
+# System prompt for the chatbot
+SYSTEM_PROMPT = """You are a helpful Campus Information Assistant for a university.
+Your job is to answer questions about courses, admissions, facilities, notices, and other campus-related topics.
+
+Guidelines:
+1. Use the campus_qa tool to retrieve relevant information from campus documents
+2. Provide accurate, concise answers based on the retrieved documents
+3. If information is not found in the documents, clearly state that
+4. Be professional and helpful
+5. Provide specific details when available (course codes, dates, contact information, etc.)"""
+
 
 # Define campus QA tool
 @tool
 def campus_qa(query: str) -> str:
     """
     Query the campus brochure documents and return relevant information.
-    Use this tool to answer questions about courses, admissions, campus facilities, etc.
+    Use this tool to answer any questions about courses, admissions, campus facilities, notices, etc.
+    Always use this tool when users ask questions.
     """
     try:
         vector_store = get_vector_store()
-        docs = vector_store.similarity_search(query, k=3)
+
+        # Search for relevant documents
+        docs = vector_store.similarity_search(query, k=5)
 
         if not docs:
-            return "I couldn't find relevant information in the campus documents."
+            return "I couldn't find relevant information in the campus documents about your question."
 
+        # Combine retrieved documents
         context = "\n\n".join([doc.page_content for doc in docs])
 
-        # Use LLM to generate response based on retrieved context
-        response = llm.invoke(
-            f"Based on the following campus information, answer the question.\n\n"
-            f"Context:\n{context}\n\n"
-            f"Question: {query}\n\n"
-            f"Answer:"
+        # Create prompt template
+        prompt_template = PromptTemplate(
+            input_variables=["context", "question"],
+            template="""Based on the following campus information, answer the question concisely and accurately.
+If the information is not in the provided context, say so clearly.
+
+Context:
+{context}
+
+Question: {question}
+
+Answer:""",
         )
+
+        # Format and invoke LLM
+        formatted_prompt = prompt_template.format(context=context, question=query)
+        response = llm.invoke(formatted_prompt)
+
         return response.content
     except Exception as e:
         return f"Error retrieving information: {str(e)}"
@@ -126,15 +152,17 @@ class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
 
-# Define chat node
+# Define chat node with system prompt
 def chat_node(state: ChatState):
     """LLM processes messages and decides whether to use tools."""
     messages = state["messages"]
+
+    # Invoke LLM with messages - it will decide to use campus_qa tool
     response = llm.invoke(messages)
     return {"messages": [response]}
 
 
-# Initialize SQLite checkpointer for persistence
+# Initialize SQLite checkpointer
 def get_checkpointer():
     """Get or create SQLite checkpointer for conversation persistence."""
     conn = sqlite3.connect("chatbot.db", check_same_thread=False)
@@ -170,7 +198,6 @@ def retrieve_all_threads() -> list:
         checkpointer = get_checkpointer()
         all_threads = set()
 
-        # List returns iterator of checkpoints
         for checkpoint in checkpointer.list(None):
             if checkpoint and checkpoint.config:
                 thread_id = checkpoint.config.get("configurable", {}).get("thread_id")
