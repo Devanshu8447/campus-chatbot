@@ -20,16 +20,34 @@ load_dotenv()
 
 def load_brochures(folder_path: str = "./brochures") -> list:
     """Load PDF documents from the given folder path."""
-    if not os.path.exists(folder_path):
-        return []
-
     docs = []
-    for pdf_path in glob.glob(os.path.join(folder_path, "*.pdf")):
+    
+    # Check if folder exists
+    if not os.path.exists(folder_path):
+        print(f"Creating {folder_path} folder...")
+        os.makedirs(folder_path, exist_ok=True)
+        return docs
+    
+    # Get all PDF files
+    pdf_files = glob.glob(os.path.join(folder_path, "*.pdf"))
+    
+    if not pdf_files:
+        print(f"No PDF files found in {folder_path}")
+        return docs
+    
+    print(f"Found {len(pdf_files)} PDF file(s) to load")
+    
+    for pdf_path in pdf_files:
         try:
+            print(f"Loading: {pdf_path}")
             loader = PyPDFLoader(pdf_path)
-            docs.extend(loader.load())
+            loaded_docs = loader.load()
+            print(f"  ✓ Loaded {len(loaded_docs)} pages")
+            docs.extend(loaded_docs)
         except Exception as e:
-            print(f"Error loading {pdf_path}: {e}")
+            print(f"  ✗ Error loading {pdf_path}: {e}")
+    
+    print(f"Total documents loaded: {len(docs)}")
     return docs
 
 

@@ -79,9 +79,15 @@ if st.sidebar.button("🆕 New Chat"):
 # Initialize vector store (only once)
 if not st.session_state["vector_store_initialized"]:
     with st.spinner("🔄 Loading campus documents..."):
-        docs = load_brochures()
-        if docs:
-            initialize_vector_store(docs)
+        try:
+            docs = load_brochures()
+            if docs:
+                added = initialize_vector_store(docs)
+                st.success(f"✅ Loaded {added} pages from brochures")
+            else:
+                st.info("ℹ️ No brochures found. Upload PDFs to get started!")
+        except Exception as e:
+            st.error(f"Error loading brochures: {e}")
     st.session_state["vector_store_initialized"] = True
 
 # Upload new notices
